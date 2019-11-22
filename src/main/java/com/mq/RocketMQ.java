@@ -142,7 +142,7 @@ public class RocketMQ extends AbMQ {
         try {
             //producer.setRetryTimesWhenSendAsyncFailed(2);
             producer.setSendMsgTimeout(3000);
-            producer.setRetryTimesWhenSendAsyncFailed(0);
+            producer.setRetryTimesWhenSendAsyncFailed(3);
             startProduce = System.currentTimeMillis();
             for (int i = 0; i < count; i++) {
                 //Create a message instance, specifying topic, tag and message body.
@@ -196,7 +196,7 @@ public class RocketMQ extends AbMQ {
     }
 
     @Override
-    public void consumeMsg(String msg) {
+    public void consumeMsg(String msg, Object... obj) {
 
         if(cNum.get() == 0){
             startConsume = System.currentTimeMillis();

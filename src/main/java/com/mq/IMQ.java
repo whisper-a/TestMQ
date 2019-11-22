@@ -15,7 +15,7 @@ public interface IMQ {
 
     void publishMsg(String msg, int count) throws UnsupportedEncodingException;
 
-    void consumeMsg(String msg);
+    void consumeMsg(String msg, Object ... obj);
 
     void initProducer()throws Exception;
 

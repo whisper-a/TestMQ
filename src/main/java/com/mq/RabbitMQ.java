@@ -1,6 +1,7 @@
 package com.mq;
 
 import com.rabbitmq.client.AMQP;
+import com.rabbitmq.client.Address;
 import com.rabbitmq.client.BuiltinExchangeType;
 import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.Connection;
@@ -8,14 +9,20 @@ import com.rabbitmq.client.ConnectionFactory;
 import com.rabbitmq.client.Consumer;
 import com.rabbitmq.client.DefaultConsumer;
 import com.rabbitmq.client.Envelope;
+import io.netty.util.internal.ConcurrentSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -40,7 +47,7 @@ public class RabbitMQ extends AbMQ {
     private static long startConsume;
     private static long endConsume;
 
-    private static int channelCount = 1;
+    private static int channelCount = 8;
 
 
     //params
@@ -51,7 +58,7 @@ public class RabbitMQ extends AbMQ {
     private boolean isProducer= true;
 
 
-
+    Set<String> threadSet = new ConcurrentSet<>();
     private static String userName = "test";
     private static String passwd = "test";
 
@@ -78,13 +85,18 @@ public class RabbitMQ extends AbMQ {
         factory.setPort(port);
         factory.setUsername(userName);
         factory.setPassword(passwd);
-        connection = factory.newConnection();
+        factory.setSharedExecutor(Executors.newFixedThreadPool(8, new ThreadNameFactory("Consumer-Thread-")));
+        //connection = factory.newConnection();
+        List<Address> list = new ArrayList<>();
+        list.add(new Address("127.0.0.1", 5672));
+        connection = factory.newConnection(list);
         if(isProducer) {
             producerChannel = connection.createChannel();
         }else {
             consumerChannel = new Channel[channelCount];
             for(int i = 0; i < channelCount; ++i) {
                 consumerChannel[i] = connection.createChannel();
+                consumerChannel[i].basicQos(1);
             }
         }
     }
@@ -95,7 +107,7 @@ public class RabbitMQ extends AbMQ {
         producerChannel.exchangeDeclare(exName,
                 BuiltinExchangeType.DIRECT, true, false, null);
         // 创建本服务器的队列
-        producerChannel.queueDeclare(queueName, true, false, true, null);
+        producerChannel.queueDeclare(queueName, true, false, false, null);
         // 把队列绑定到路由上
         producerChannel.queueBind(queueName, exName, key);
 
@@ -108,26 +120,49 @@ public class RabbitMQ extends AbMQ {
         initExchangeAndQueue();
     }
 
+    public static class LocalConsumer extends DefaultConsumer{
+
+        private Channel subChannel;
+
+        private RabbitMQ mq;
+        /**
+         * Constructs a new instance and records its association to the passed-in channel.
+         *
+         * @param channel the channel to which this consumer is attached
+         */
+        public LocalConsumer(RabbitMQ mq, Channel channel) {
+            super(channel);
+            this.mq = mq;
+            this.subChannel = channel;
+        }
+
+        public Channel getSubChannel(){
+            return this.subChannel;
+        }
+
+        @Override
+        public void handleDelivery(String consumerTag, Envelope envelope,
+                AMQP.BasicProperties properties, byte[] body) throws IOException {
+            String msg = new String(body);
+            mq.consumeMsg(msg, subChannel);
+            mq.threadSet.add(Thread.currentThread().getName());
+            subChannel.basicAck(envelope.getDeliveryTag(), false);
+        }
+    }
+
     @Override
     public void initConsumer() throws Exception {
         initConnection();
-
         for(int i = 0; i < channelCount; ++i) {
-            Consumer consumer = new DefaultConsumer(consumerChannel[i]) {
-                @Override
-                public void handleDelivery(String consumerTag, Envelope envelope,
-                        AMQP.BasicProperties properties, byte[] body) throws IOException {
-                    String msg = new String(body);
-                    consumeMsg(msg);
-                }
-            };
-            consumerChannel[i].basicConsume(queueName, true, consumer);
+            Consumer consumer = new LocalConsumer(this, consumerChannel[i]);
+            consumerChannel[i].basicQos(1);
+            consumerChannel[i].basicConsume(queueName, false, consumer);
         }
         startConsume = System.currentTimeMillis();
 
         new Thread(() -> {
             while(true){
-                logger.info("consume msg:{} use time:{}'ms",cNum.get(), endConsume - startConsume);
+                //logger.info("consume msg:{} use time:{}'ms, total thread:{}",cNum.get(), endConsume - startConsume, threadSet.size());
                 try {
                     Thread.sleep(3000);
                 } catch (InterruptedException e) {
@@ -156,7 +191,8 @@ public class RabbitMQ extends AbMQ {
             try {
                 long t1 = System.currentTimeMillis();
                 for(int i = 0; i < count; ++i) {
-                    producerChannel.basicPublish(exName, key, buildBasicProperties("sr1"), msg.getBytes());
+                    String newStr = msg + i;
+                    producerChannel.basicPublish(exName, key, buildBasicProperties("sr1"), newStr.getBytes());
                 }
                 long t2 = System.currentTimeMillis();
 
@@ -166,6 +202,7 @@ public class RabbitMQ extends AbMQ {
             }
             return 0L;
         });
+
         try {
             logger.info("rabbit mq publish msg count:{}, use time:{}'ms", count, f.get());
             producerChannel.close();
@@ -185,23 +222,19 @@ public class RabbitMQ extends AbMQ {
 
 
     @Override
-    public void consumeMsg(String msg) {
+    public void consumeMsg(String msg, Object... obj) {
 
         if(cNum.get() == 0){
             startConsume = System.currentTimeMillis();
         }
         cNum.incrementAndGet();
-        logger.debug("consume msg:{}", msg);
+        logger.debug("channel:{} consume msg:{}", obj[0], msg);
         endConsume = System.currentTimeMillis();
+        try {
+            Thread.sleep(3000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
     }
-
-
-
-
-
-
-
-
-
 
 }
